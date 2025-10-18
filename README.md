@@ -258,8 +258,8 @@ my-project/
 
 We welcome contributions! Dockstep is open source and community-driven.
 
-- **Found a bug?** [Open an issue](https://github.com/your-username/dockstep/issues)
-- **Have an idea?** [Start a discussion](https://github.com/your-username/dockstep/discussions)
+- **Found a bug?** [Open an issue](https://github.com/leonardmq/dockstep/issues)
+- **Have an idea?** [Start a discussion](https://github.com/leonardmq/dockstep/discussions)
 - **Want to code?** [Check out our contributing guide](CONTRIBUTING.md)
 
 ## License
