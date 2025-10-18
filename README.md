@@ -1,6 +1,6 @@
 # Dockstep
 
-> **The Jupyter Notebook for Docker** - Build, debug, and iterate on Docker images interactively
+> **Jupyter Notebook but for Docker** - Build, debug, and iterate on Docker images interactively
 
 Dockstep transforms Docker image building into an interactive, explorable experience. Think of it as Jupyter Notebooks, but for Dockerfiles - where each cell is a build step you can run, inspect, modify, and iterate on independently.
 
@@ -258,8 +258,8 @@ my-project/
 
 We welcome contributions! Dockstep is open source and community-driven.
 
-- **Found a bug?** [Open an issue](https://github.com/your-username/dockstep/issues)
-- **Have an idea?** [Start a discussion](https://github.com/your-username/dockstep/discussions)
+- **Found a bug?** [Open an issue](https://github.com/leonardmq/dockstep/issues)
+- **Have an idea?** [Start a discussion](https://github.com/leonardmq/dockstep/discussions)
 - **Want to code?** [Check out our contributing guide](CONTRIBUTING.md)
 
 ## License
