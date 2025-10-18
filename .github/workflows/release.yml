@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build CLI
+        env:
+          GOOS_TARGET: ${{ matrix.goos }}
+          GOARCH_TARGET: ${{ matrix.goarch }}
+        run: |
+          mkdir -p bin
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            OUT="bin/dockstep-${{ matrix.goos }}-${{ matrix.goarch }}.exe"
+          else
+            OUT="bin/dockstep-${{ matrix.goos }}-${{ matrix.goarch }}"
+          fi
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -o "$OUT" ./cmd/dockstep
+
+      - name: Archive artifact
+        run: |
+          cd bin
+          if [ "${{ matrix.goos }}" = "linux" ]; then
+            tar -czf dockstep-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz dockstep-${{ matrix.goos }}-${{ matrix.goarch }}
+          else
+            zip -q dockstep-${{ matrix.goos }}-${{ matrix.goarch }}.zip dockstep-${{ matrix.goos }}-${{ matrix.goarch }}*
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dockstep-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            bin/dockstep-${{ matrix.goos }}-${{ matrix.goarch }}*
+
+  publish:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/**/dockstep-*
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            ### One-Line Install (Recommended)
+            ```bash
+            curl -sSL https://raw.githubusercontent.com/leonardmq/dockstep/main/scripts/install.sh | bash
+            ```
+
+            ### Direct Download
+            Download the appropriate binary for your platform and architecture from the assets below.
+
+            ## What's Changed
+            ${{ github.event.head_commit.message }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
