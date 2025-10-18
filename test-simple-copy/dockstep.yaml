@@ -1,0 +1,17 @@
+version: "1.0"
+name: "simple-copy-test"
+
+settings:
+  network: "default"
+  shell: "/bin/sh"
+
+blocks:
+  - id: "test-copy"
+    from: "alpine:latest"
+    workdir: "/app"
+    cmd: |
+      echo "Before COPY"
+      COPY test-file.txt /tmp/
+      echo "After COPY"
+      ls -la /tmp/
+      cat /tmp/test-file.txt

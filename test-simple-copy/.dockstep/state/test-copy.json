@@ -1,0 +1,9 @@
+{
+  "id": "test-copy",
+  "status": "failed",
+  "hash": "8316ab5ad03da43964144e49d7892e36fcfc331a6779b3ebae48ee3131cfcf9e",
+  "timestamp": "2025-10-18T15:07:17.5393+08:00",
+  "exit_code": -1,
+  "duration": 31990000,
+  "error": "failed to execute COPY commands: failed to copy test-file.txt to /tmp/: Error response from daemon: cannot overwrite directory \"/tmp\" with non-directory \"/tmp\""
+}

@@ -1,0 +1,18 @@
+version: "1.0"
+name: "copy-test-custom-context"
+
+settings:
+  network: "default"
+  shell: "/bin/sh"
+
+blocks:
+  - id: "copy-with-context"
+    from: "alpine:latest"
+    workdir: "/app"
+    context: "../test-copy"
+    cmd: |
+      COPY . /app
+      echo "Files copied from custom context:"
+      ls -la /app
+      echo "Content of test file:"
+      cat /app/test-file.txt

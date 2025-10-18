@@ -1,0 +1,40 @@
+version: "1.0"
+name: "basic-example"
+
+settings:
+  network: "default"
+  shell: "/bin/sh"
+
+blocks:
+  - id: "base"
+    from: "alpine:latest"
+    cmd: |
+      echo "Setting up base environment"
+      apk add --no-cache bash curl git
+
+  - id: "deps"
+    from_block: "base"
+    workdir: "/app"
+    env:
+      - "NODE_ENV=production"
+    cmd: |
+      echo "Installing dependencies"
+      apk add --no-cache nodejs npm
+      npm install -g typescript
+
+  - id: "app"
+    from_block: "deps"
+    workdir: "/app"
+    env:
+      - "NODE_ENV=production"
+      - "PORT=3000"
+    cmd: |
+      echo "Setting up application"
+      mkdir -p /app/src
+      echo 'console.log("Hello from dockstep!");' > /app/src/index.js
+    export:
+      labels:
+        maintainer: "dockstep"
+        version: "1.0.0"
+      entrypoint: ["node"]
+      cmd: ["/app/src/index.js"]

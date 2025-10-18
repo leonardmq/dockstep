@@ -1,0 +1,28 @@
+version: "1.0"
+name: my-project
+settings:
+    network: default
+    shell: /bin/sh
+blocks:
+    - id: main
+      from: alpine:latest
+      cmd: |
+        echo "Hello from dockstep!"
+        # Add your commands here
+      network: default
+    - id: go
+      from_block: main
+      cmd: |-
+        apk update
+        apk add go
+        go version
+    - id: version
+      from_block: go
+      cmd: |-
+        # extend the step that installed go
+        go version
+    - id: copy
+      from_block: version
+      cmd: |-
+        echo 'new block that copies file from context into the image'
+        COPY ./xoxo/somefile.txt .

@@ -1,0 +1,26 @@
+[
+  {
+    "path": "/root",
+    "kind": "A"
+  },
+  {
+    "path": "/root/.config",
+    "kind": "A"
+  },
+  {
+    "path": "/root/.config/go",
+    "kind": "A"
+  },
+  {
+    "path": "/root/.config/go/telemetry",
+    "kind": "A"
+  },
+  {
+    "path": "/root/.config/go/telemetry/local",
+    "kind": "A"
+  },
+  {
+    "path": "/root/.config/go/telemetry/local/go@go1.24.9-go1.24.9-linux-arm64-2025-10-18.v1.count",
+    "kind": "A"
+  }
+]

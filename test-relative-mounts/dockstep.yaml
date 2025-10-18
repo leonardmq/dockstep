@@ -1,0 +1,20 @@
+version: "1.0"
+name: "my-project"
+
+settings:
+  network: "default"
+  shell: "/bin/sh"
+
+blocks:
+  - id: "main"
+    from: "alpine:latest"
+    workdir: "/app"
+    mounts:
+      - source: "./test-file.txt"  # Relative path to specific file
+        target: "/app/test-file.txt"
+    cmd: |
+      echo "Hello from dockstep!"
+      echo "Checking if mounted file exists:"
+      ls -la /app/
+      echo "Content of mounted file:"
+      cat /app/test-file.txt

@@ -1,0 +1,7 @@
+# Test .dockerignore file
+node_modules/
+*.log
+.git/
+.DS_Store
+temp/
+*.tmp
