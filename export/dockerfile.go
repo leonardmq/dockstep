@@ -55,65 +55,12 @@ func GenerateDockerfile(project *types.Project, endBlockID string, opts types.Do
 
 	// Process each block in the chain
 	for i, block := range chain {
-		// Add environment variables
-		if len(block.Env) > 0 {
-			for _, env := range block.Env {
-				lines = append(lines, fmt.Sprintf("ENV %s", env))
-			}
-			lines = append(lines, "")
+		// Add block instructions directly
+		for _, instruction := range block.Instructions {
+			lines = append(lines, instruction)
 		}
-
-		// Add working directory
-		if block.Workdir != "" {
-			lines = append(lines, fmt.Sprintf("WORKDIR %s", block.Workdir))
+		if len(block.Instructions) > 0 {
 			lines = append(lines, "")
-		}
-
-		// Process commands - separate COPY from RUN
-		if block.Cmd != "" {
-			cmdLines := strings.Split(strings.TrimSpace(block.Cmd), "\n")
-			var copyLines []string
-			var runLines []string
-			
-			// Separate COPY and RUN commands
-			for _, line := range cmdLines {
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				if strings.HasPrefix(strings.ToUpper(line), "COPY") {
-					copyLines = append(copyLines, line)
-				} else {
-					runLines = append(runLines, line)
-				}
-			}
-			
-			// Add COPY directives
-			for _, copyLine := range copyLines {
-				lines = append(lines, copyLine)
-			}
-			if len(copyLines) > 0 {
-				lines = append(lines, "")
-			}
-			
-			// Add RUN directive for non-COPY commands
-			if len(runLines) > 0 {
-				if len(runLines) == 1 {
-					// Single line command
-					lines = append(lines, fmt.Sprintf("RUN %s", runLines[0]))
-				} else {
-					// Multi-line command
-					lines = append(lines, "RUN \\")
-					for j, line := range runLines {
-						if j == len(runLines)-1 {
-							lines = append(lines, fmt.Sprintf("    %s", line))
-						} else {
-							lines = append(lines, fmt.Sprintf("    %s && \\", line))
-						}
-					}
-				}
-				lines = append(lines, "")
-			}
 		}
 
 		// Add export configuration if present

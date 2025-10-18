@@ -14,7 +14,6 @@ import (
 const (
 	StateDir          = "state"
 	LogsDir           = "logs"
-	DiffsDir          = "diffs"
 	ImagesDir         = "images"
 	CacheFile         = "cache/index.json"
 	ArtifactsDir      = "artifacts"
@@ -48,7 +47,6 @@ func (s *Store) Init() error {
 		filepath.Join(s.rootPath, ".dockstep"),
 		filepath.Join(s.rootPath, ".dockstep", StateDir),
 		filepath.Join(s.rootPath, ".dockstep", LogsDir),
-		filepath.Join(s.rootPath, ".dockstep", DiffsDir),
 		filepath.Join(s.rootPath, ".dockstep", ImagesDir),
 		filepath.Join(s.rootPath, ".dockstep", ArtifactsDir),
 		filepath.Join(s.rootPath, ".dockstep", HistoryDir),
@@ -136,20 +134,16 @@ func (s *Store) LoadLogs(id string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// SaveDiff saves diff to diffs/<block-id>.json
-func (s *Store) SaveDiff(id string, diff []types.DiffEntry) error {
-	path := filepath.Join(s.rootPath, ".dockstep", DiffsDir, id+".json")
-	return s.writeJSON(path, diff)
+// SaveSuccessfulLogs saves successful build logs to logs/<block-id>.success.log
+func (s *Store) SaveSuccessfulLogs(id string, logs []byte) error {
+	path := filepath.Join(s.rootPath, ".dockstep", LogsDir, id+".success.log")
+	return os.WriteFile(path, logs, 0644)
 }
 
-// LoadDiff loads diff from diffs/<block-id>.json
-func (s *Store) LoadDiff(id string) ([]types.DiffEntry, error) {
-	path := filepath.Join(s.rootPath, ".dockstep", DiffsDir, id+".json")
-	var diff []types.DiffEntry
-	if err := s.readJSON(path, &diff); err != nil {
-		return nil, err
-	}
-	return diff, nil
+// LoadSuccessfulLogs loads successful build logs from logs/<block-id>.success.log
+func (s *Store) LoadSuccessfulLogs(id string) ([]byte, error) {
+	path := filepath.Join(s.rootPath, ".dockstep", LogsDir, id+".success.log")
+	return os.ReadFile(path)
 }
 
 // SaveImageDigest saves image digest to images/<block-id>.digest
@@ -238,29 +232,14 @@ func ComputeBlockHash(block types.Block, parentDigest string) string {
 
 	// Include block fields that affect execution
 	h.Write([]byte(block.ID))
-	h.Write([]byte(block.Cmd))
-	h.Write([]byte(block.Workdir))
+	h.Write([]byte(block.From))
+	h.Write([]byte(block.FromBlock))
+	h.Write([]byte(block.Context))
 
-	// Include environment variables (sorted for determinism)
-	for _, env := range block.Env {
-		h.Write([]byte(env))
+	// Include instructions
+	for _, instruction := range block.Instructions {
+		h.Write([]byte(instruction))
 	}
-
-	// Include mounts
-	for _, mount := range block.Mounts {
-		h.Write([]byte(mount.Source))
-		h.Write([]byte(mount.Target))
-		h.Write([]byte(mount.Mode))
-	}
-
-	// Include resources
-	if block.Resources != nil {
-		h.Write([]byte(block.Resources.CPU))
-		h.Write([]byte(block.Resources.Memory))
-	}
-
-	// Include network
-	h.Write([]byte(string(block.Network)))
 
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
@@ -306,9 +285,7 @@ func (s *Store) Cleanup(blockID string, descendants []string) error {
 		logPath := filepath.Join(s.rootPath, ".dockstep", LogsDir, id+".log")
 		os.Remove(logPath)
 
-		// Remove diff
-		diffPath := filepath.Join(s.rootPath, ".dockstep", DiffsDir, id+".json")
-		os.Remove(diffPath)
+		// No diff files to remove in new schema
 
 		// Remove image digest
 		imagePath := filepath.Join(s.rootPath, ".dockstep", ImagesDir, id+".digest")

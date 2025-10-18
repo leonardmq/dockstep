@@ -1,8 +1,0 @@
-{
-  "id": "install-go",
-  "status": "success",
-  "digest": "sha256:68fdf098e2ff7cb829d6efb65d2798e375d823f96d8a2b2f43dd4bd371133ddd",
-  "hash": "bb7768c511998aa8eb8d4b5a3afad4cb0cc73450c002a7aa18152cd208e2f3a7",
-  "timestamp": "2025-10-18T14:04:45.387238+08:00",
-  "duration": 9010695667
-}

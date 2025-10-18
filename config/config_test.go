@@ -69,11 +69,20 @@ func TestValidate(t *testing.T) {
 				Name:    "test",
 				Blocks: []types.Block{
 					{
-						ID:   "base",
-						From: "alpine:latest",
-						Cmd:  "echo hello",
+						ID:           "base",
+						From:         "alpine:latest",
+						Instructions: []string{"RUN echo hello"},
 					},
 				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty project (no blocks)",
+			project: &types.Project{
+				Version: "1.0",
+				Name:    "test",
+				Blocks:  []types.Block{},
 			},
 			wantErr: false,
 		},
@@ -83,9 +92,9 @@ func TestValidate(t *testing.T) {
 				Name: "test",
 				Blocks: []types.Block{
 					{
-						ID:   "base",
-						From: "alpine:latest",
-						Cmd:  "echo hello",
+						ID:           "base",
+						From:         "alpine:latest",
+						Instructions: []string{"RUN echo hello"},
 					},
 				},
 			},
@@ -98,14 +107,14 @@ func TestValidate(t *testing.T) {
 				Name:    "test",
 				Blocks: []types.Block{
 					{
-						ID:   "base",
-						From: "alpine:latest",
-						Cmd:  "echo hello",
+						ID:           "base",
+						From:         "alpine:latest",
+						Instructions: []string{"RUN echo hello"},
 					},
 					{
-						ID:   "base",
-						From: "alpine:latest",
-						Cmd:  "echo world",
+						ID:           "base",
+						From:         "alpine:latest",
+						Instructions: []string{"RUN echo world"},
 					},
 				},
 			},
@@ -118,14 +127,14 @@ func TestValidate(t *testing.T) {
 				Name:    "test",
 				Blocks: []types.Block{
 					{
-						ID:        "a",
-						FromBlock: "b",
-						Cmd:       "echo a",
+						ID:           "a",
+						FromBlock:    "b",
+						Instructions: []string{"RUN echo a"},
 					},
 					{
-						ID:        "b",
-						FromBlock: "a",
-						Cmd:       "echo b",
+						ID:           "b",
+						FromBlock:    "a",
+						Instructions: []string{"RUN echo b"},
 					},
 				},
 			},

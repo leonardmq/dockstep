@@ -18,6 +18,7 @@ import (
 
 	assets "dockstep.dev"
 	"dockstep.dev/config"
+	"dockstep.dev/docker"
 	"dockstep.dev/engine"
 	"dockstep.dev/export"
 	"dockstep.dev/store"
@@ -27,10 +28,11 @@ import (
 // Embedded UI disabled for now; serve placeholder until SPA exists
 
 type uiServer struct {
-	engine *engine.Engine
-	store  *store.Store
-	busyMu sync.Mutex
-	isBusy bool
+	engine       *engine.Engine
+	store        *store.Store
+	dockerClient *docker.Client
+	busyMu       sync.Mutex
+	isBusy       bool
 }
 
 func (s *uiServer) setBusy(b bool) bool {
@@ -63,6 +65,7 @@ func (s *uiServer) routes() http.Handler {
 	mux.HandleFunc("/api/diff", s.handleDiff)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/lineage", s.handleLineage)
 
 	// Static UI: serve built SPA when present; fallback to placeholder
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -113,11 +116,12 @@ func (s *uiServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		var body struct {
-			ID        string `json:"id"`
-			From      string `json:"from"`
-			FromBlock string `json:"from_block"`
-			Workdir   string `json:"workdir"`
-			Context   string `json:"context"`
+			ID               string `json:"id"`
+			From             string `json:"from"`
+			FromBlock        string `json:"from_block"`
+			FromBlockVersion string `json:"from_block_version"`
+			Workdir          string `json:"workdir"`
+			Context          string `json:"context"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
@@ -136,7 +140,7 @@ func (s *uiServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		nb := types.Block{ID: body.ID, From: body.From, FromBlock: body.FromBlock, Workdir: body.Workdir, Context: body.Context, Cmd: "echo 'new block'"}
+		nb := types.Block{ID: body.ID, From: body.From, FromBlock: body.FromBlock, FromBlockVersion: body.FromBlockVersion, Context: body.Context, Instructions: []string{"RUN echo 'new block'"}}
 		proj.Blocks = append(proj.Blocks, nb)
 		cfgPath := s.store.RootPath() + "/dockstep.yaml"
 		if err := config.Validate(proj); err != nil {
@@ -179,20 +183,18 @@ func (s *uiServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 		found := false
 		for i := range proj.Blocks {
 			if proj.Blocks[i].ID == idv {
-				if v, ok := body["cmd"].(string); ok {
-					proj.Blocks[i].Cmd = v
-				}
-				if v, ok := body["workdir"].(string); ok {
-					proj.Blocks[i].Workdir = v
-				}
-				if v, ok := body["env"].([]any); ok {
+				if v, ok := body["instructions"].([]any); ok {
 					var out []string
 					for _, e := range v {
 						if s, ok := e.(string); ok {
 							out = append(out, s)
 						}
 					}
-					proj.Blocks[i].Env = out
+					proj.Blocks[i].Instructions = out
+				}
+				// Also handle 'cmd' field for backward compatibility
+				if v, ok := body["cmd"].(string); ok && v != "" {
+					proj.Blocks[i].Instructions = []string{v}
 				}
 				if v, ok := body["from"].(string); ok {
 					proj.Blocks[i].From = v
@@ -203,6 +205,9 @@ func (s *uiServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 					if v != "" {
 						proj.Blocks[i].From = ""
 					}
+				}
+				if v, ok := body["from_block_version"].(string); ok {
+					proj.Blocks[i].FromBlockVersion = v
 				}
 				found = true
 				break
@@ -245,14 +250,7 @@ func (s *uiServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		// If we deleted the last block, add a minimal default block
-		if len(proj.Blocks) == 0 {
-			proj.Blocks = append(proj.Blocks, types.Block{
-				ID:   "main",
-				From: "alpine:latest",
-				Cmd:  "echo 'Hello from dockstep!'",
-			})
-		}
+		// Allow empty project - no automatic block creation
 
 		// Re-validate and persist
 		cfgPath := s.store.RootPath() + "/dockstep.yaml"
@@ -273,18 +271,34 @@ func (s *uiServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *uiServer) handleImage(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Query().Get("id")
-	if id == "" {
-		http.Error(w, "id required", http.StatusBadRequest)
-		return
+	switch r.Method {
+	case http.MethodGet:
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, "id required", http.StatusBadRequest)
+			return
+		}
+		digest, err := s.store.LoadImageDigest(id)
+		if err != nil || digest == "" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"digest": digest})
+	case http.MethodDelete:
+		digest := r.URL.Query().Get("digest")
+		if digest == "" {
+			http.Error(w, "digest required", http.StatusBadRequest)
+			return
+		}
+		if err := s.dockerClient.DeleteImage(r.Context(), digest); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
-	digest, err := s.store.LoadImageDigest(id)
-	if err != nil || digest == "" {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"digest": digest})
 }
 
 func (s *uiServer) handleExportDockerfile(w http.ResponseWriter, r *http.Request) {
@@ -418,7 +432,15 @@ func (s *uiServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !follow {
-		data, err := s.store.LoadLogs(id)
+		// Try successful logs first, then fall back to regular logs
+		var data []byte
+		var err error
+
+		if data, err = s.store.LoadSuccessfulLogs(id); err != nil || len(data) == 0 {
+			// Fall back to regular logs if no successful logs found
+			data, err = s.store.LoadLogs(id)
+		}
+
 		if err != nil {
 			http.Error(w, "no logs", http.StatusNotFound)
 			return
@@ -444,7 +466,15 @@ func (s *uiServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			data, err := s.store.LoadLogs(id)
+			// Try successful logs first, then fall back to regular logs
+			var data []byte
+			var err error
+
+			if data, err = s.store.LoadSuccessfulLogs(id); err != nil || len(data) == 0 {
+				// Fall back to regular logs if no successful logs found
+				data, err = s.store.LoadLogs(id)
+			}
+
 			if err == nil {
 				if len(data) > lastLen {
 					chunk := data[lastLen:]
@@ -463,43 +493,75 @@ func (s *uiServer) handleDiff(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "id required", http.StatusBadRequest)
 		return
 	}
-	since := r.URL.Query().Get("since") == "true"
-	filter := r.URL.Query().Get("filter")
 
-	var diffs []types.DiffEntry
-	if since {
-		for _, b := range s.engine.GetProject().Blocks {
-			d, err := s.store.LoadDiff(b.ID)
-			if err == nil {
-				diffs = append(diffs, d...)
-			}
-			if b.ID == id {
-				break
-			}
-		}
-	} else {
-		d, err := s.store.LoadDiff(id)
-		if err != nil {
-			http.Error(w, "diff not found", http.StatusNotFound)
-			return
-		}
-		diffs = d
+	// Get the current image digest for this block
+	digest, err := s.store.LoadImageDigest(id)
+	if err != nil {
+		// No image built yet, return empty diff
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]types.DiffEntry{})
+		return
 	}
-	if filter != "" {
-		allowed := map[string]bool{}
-		for _, k := range strings.Split(filter, ",") {
-			allowed[strings.TrimSpace(k)] = true
-		}
-		var out []types.DiffEntry
-		for _, e := range diffs {
-			if allowed[e.Kind] {
-				out = append(out, e)
-			}
-		}
-		diffs = out
+
+	// Get the parent image digest
+	parentDigest, err := s.getParentImageDigest(id)
+	if err != nil {
+		// No parent image, return empty diff
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]types.DiffEntry{})
+		return
 	}
+
+	// Get diff between parent and current image
+	diff, err := s.dockerClient.GetImageDiff(r.Context(), parentDigest, digest)
+	if err != nil {
+		// If diff fails, return empty array
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]types.DiffEntry{})
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(diffs)
+	json.NewEncoder(w).Encode(diff)
+}
+
+// getParentImageDigest gets the parent image digest for a block
+func (s *uiServer) getParentImageDigest(blockID string) (string, error) {
+	// Load the project to find the block's parent
+	configPath, err := config.FindConfigFile(s.store.RootPath())
+	if err != nil {
+		return "", err
+	}
+
+	project, err := config.Parse(configPath)
+	if err != nil {
+		return "", err
+	}
+
+	// Find the block
+	var block *types.Block
+	for _, b := range project.Blocks {
+		if b.ID == blockID {
+			block = &b
+			break
+		}
+	}
+	if block == nil {
+		return "", fmt.Errorf("block %s not found", blockID)
+	}
+
+	// If block has a from_block, get that block's digest
+	if block.FromBlock != "" {
+		return s.store.LoadImageDigest(block.FromBlock)
+	}
+
+	// If block has a from image, we can't diff against it directly
+	// Return empty string to indicate no parent image
+	if block.From != "" {
+		return "", fmt.Errorf("cannot diff against base image %s", block.From)
+	}
+
+	return "", fmt.Errorf("no parent found for block %s", blockID)
 }
 
 func (s *uiServer) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -563,7 +625,79 @@ func (s *uiServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(recs)
 }
 
-func cmdUI(args []string, eng *engine.Engine, st *store.Store) error {
+func (s *uiServer) handleLineage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "id required", http.StatusBadRequest)
+		return
+	}
+
+	// Build lineage chain by walking up from_block references
+	var lineage []map[string]interface{}
+	visited := make(map[string]bool)
+
+	var buildLineage func(blockID string) error
+	buildLineage = func(blockID string) error {
+		if visited[blockID] {
+			return fmt.Errorf("circular dependency detected")
+		}
+		visited[blockID] = true
+
+		// Find the block
+		var block types.Block
+		found := false
+		for _, b := range s.engine.GetProject().Blocks {
+			if b.ID == blockID {
+				block = b
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("block %s not found", blockID)
+		}
+
+		// Get current state for this block
+		state, _ := s.store.LoadBlockState(blockID)
+		digest := ""
+		timestamp := ""
+		if state != nil {
+			digest = state.Digest
+			timestamp = state.Timestamp.Format("2006-01-02 15:04:05")
+		}
+
+		// Add to lineage
+		lineage = append([]map[string]interface{}{{
+			"id":                 block.ID,
+			"from":               block.From,
+			"from_block":         block.FromBlock,
+			"from_block_version": block.FromBlockVersion,
+			"digest":             digest,
+			"timestamp":          timestamp,
+		}}, lineage...)
+
+		// If this block has a from_block, recurse
+		if block.FromBlock != "" {
+			return buildLineage(block.FromBlock)
+		}
+
+		return nil
+	}
+
+	if err := buildLineage(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(lineage)
+}
+
+func cmdUI(args []string, eng *engine.Engine, st *store.Store, dockerClient *docker.Client) error {
 	fs := flagSet("ui")
 	port := fs.Int("port", 7689, "Port to serve UI")
 	open := fs.Bool("open", true, "Open browser")
@@ -571,7 +705,7 @@ func cmdUI(args []string, eng *engine.Engine, st *store.Store) error {
 		return err
 	}
 
-	srv := &uiServer{engine: eng, store: st}
+	srv := &uiServer{engine: eng, store: st, dockerClient: dockerClient}
 	httpSrv := &http.Server{Addr: ":" + strconv.Itoa(*port), Handler: srv.routes()}
 
 	go func() {

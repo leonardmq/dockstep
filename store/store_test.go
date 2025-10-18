@@ -22,7 +22,6 @@ func TestStore(t *testing.T) {
 	dirs := []string{
 		filepath.Join(tmpDir, ".dockstep", StateDir),
 		filepath.Join(tmpDir, ".dockstep", LogsDir),
-		filepath.Join(tmpDir, ".dockstep", DiffsDir),
 		filepath.Join(tmpDir, ".dockstep", ImagesDir),
 		filepath.Join(tmpDir, ".dockstep", ArtifactsDir),
 	}
@@ -96,51 +95,28 @@ func TestDiff(t *testing.T) {
 	store := New(tmpDir)
 	store.Init()
 
-	// Test SaveDiff
-	diff := []types.DiffEntry{
-		{Path: "/app/file1.txt", Kind: "A", Size: 100},
-		{Path: "/app/file2.txt", Kind: "M", Size: 200},
-		{Path: "/app/file3.txt", Kind: "D", Size: 0},
+	// Diff functionality removed in new schema - test image digest instead
+	if err := store.SaveImageDigest("test-block", "sha256:test123"); err != nil {
+		t.Fatalf("Failed to save image digest: %v", err)
 	}
 
-	if err := store.SaveDiff("test-block", diff); err != nil {
-		t.Fatalf("Failed to save diff: %v", err)
-	}
-
-	// Test LoadDiff
-	loaded, err := store.LoadDiff("test-block")
+	// Test LoadImageDigest
+	loaded, err := store.LoadImageDigest("test-block")
 	if err != nil {
-		t.Fatalf("Failed to load diff: %v", err)
+		t.Fatalf("Failed to load image digest: %v", err)
 	}
 
-	if len(loaded) != len(diff) {
-		t.Errorf("Expected %d diff entries, got %d", len(diff), len(loaded))
-	}
-
-	for i, entry := range loaded {
-		if entry.Path != diff[i].Path {
-			t.Errorf("Expected path %s, got %s", diff[i].Path, entry.Path)
-		}
-		if entry.Kind != diff[i].Kind {
-			t.Errorf("Expected kind %s, got %s", diff[i].Kind, entry.Kind)
-		}
+	if loaded != "sha256:test123" {
+		t.Errorf("Expected digest sha256:test123, got %s", loaded)
 	}
 }
 
 func TestComputeBlockHash(t *testing.T) {
 	block := types.Block{
-		ID:      "test-block",
-		Cmd:     "echo hello",
-		Workdir: "/app",
-		Env:     []string{"KEY=value"},
-		Mounts: []types.Mount{
-			{Source: "/host", Target: "/container"},
-		},
-		Resources: &types.Resources{
-			CPU:    "1.0",
-			Memory: "512m",
-		},
-		Network: types.NetworkDefault,
+		ID:           "test-block",
+		From:         "alpine:latest",
+		Instructions: []string{"RUN echo hello", "WORKDIR /app", "ENV KEY=value"},
+		Context:      ".",
 	}
 
 	parentDigest := "sha256:parent123"
@@ -154,7 +130,7 @@ func TestComputeBlockHash(t *testing.T) {
 
 	// Hash should be different for different inputs
 	block2 := block
-	block2.Cmd = "echo world"
+	block2.Instructions = []string{"RUN echo world", "WORKDIR /app", "ENV KEY=value"}
 	hash3 := ComputeBlockHash(block2, parentDigest)
 
 	if hash1 == hash3 {

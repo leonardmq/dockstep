@@ -1,17 +1,17 @@
 package engine
 
 import (
+	"archive/tar"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
-	"dockstep.dev/buildcontext"
 	"dockstep.dev/docker"
-	"dockstep.dev/export"
 	"dockstep.dev/store"
 	"dockstep.dev/types"
 )
@@ -88,8 +88,29 @@ func (e *Engine) RunBlock(ctx context.Context, blockID string, opts types.RunOpt
 	hash := store.ComputeBlockHash(block, parentDigest)
 
 	// Check cache if not forced
+	fmt.Printf("DEBUG: Force flag: %v, Hash: %s\n", opts.Force, hash)
 	if !opts.Force {
 		if cachedDigest, exists := e.cache.GetCachedDigest(hash); exists {
+			fmt.Printf("DEBUG: Found cached digest: %s\n", cachedDigest)
+
+			// Load existing logs from previous successful run
+			// Try successful logs first, then fall back to regular logs
+			var existingLogs []byte
+			var err error
+
+			if existingLogs, err = e.store.LoadSuccessfulLogs(blockID); err != nil || len(existingLogs) == 0 {
+				// Fall back to regular logs if no successful logs found
+				existingLogs, err = e.store.LoadLogs(blockID)
+			}
+
+			if err == nil && len(existingLogs) > 0 {
+				fmt.Printf("DEBUG: Displaying cached logs for block %s\n", blockID)
+				// Display the cached logs to stdout so they appear in the UI
+				fmt.Print(string(existingLogs))
+			} else {
+				fmt.Printf("DEBUG: No existing logs found for cached block %s\n", blockID)
+			}
+
 			// Update block state as cached
 			state := &types.BlockState{
 				ID:        blockID,
@@ -102,7 +123,11 @@ func (e *Engine) RunBlock(ctx context.Context, blockID string, opts types.RunOpt
 				return fmt.Errorf("failed to save cached state: %w", err)
 			}
 			return nil
+		} else {
+			fmt.Printf("DEBUG: No cached digest found\n")
 		}
+	} else {
+		fmt.Printf("DEBUG: Force flag is true, skipping cache\n")
 	}
 
 	// Update state to running
@@ -116,10 +141,19 @@ func (e *Engine) RunBlock(ctx context.Context, blockID string, opts types.RunOpt
 		return fmt.Errorf("failed to save running state: %w", err)
 	}
 
-	// Execute the block
+	// Clear logs before starting a fresh build (not cached)
+	if err := e.store.ClearLogs(blockID); err != nil {
+		fmt.Printf("Warning: failed to clear existing logs: %v\n", err)
+	}
+
+	// Build the block
 	startTime := time.Now()
-	digest, exitCode, err := e.executeBlock(ctx, block, parentImageRef)
+	digest, err := e.buildBlock(ctx, block, parentImageRef)
 	duration := time.Since(startTime)
+	exitCode := 0
+	if err != nil {
+		exitCode = 1
+	}
 
 	// Update state with results
 	state.Duration = duration
@@ -134,6 +168,13 @@ func (e *Engine) RunBlock(ctx context.Context, blockID string, opts types.RunOpt
 	} else {
 		state.Status = types.StatusSuccess
 		state.Digest = digest
+
+		// Save successful logs separately so they can be retrieved even after failed runs
+		if successfulLogs, err := e.store.LoadLogs(blockID); err == nil && len(successfulLogs) > 0 {
+			if err := e.store.SaveSuccessfulLogs(blockID, successfulLogs); err != nil {
+				fmt.Printf("Warning: failed to save successful logs: %v\n", err)
+			}
+		}
 	}
 
 	// Save final state
@@ -201,6 +242,7 @@ func (e *Engine) resolveParentWithVisited(ctx context.Context, block types.Block
 		if err != nil {
 			return "", "", err
 		}
+		// Return the original image reference for FROM directive, digest for hashing
 		return block.From, digest, nil
 	}
 
@@ -213,6 +255,31 @@ func (e *Engine) resolveParentWithVisited(ctx context.Context, block types.Block
 		// Mark current block as visited
 		visited[block.ID] = true
 		defer delete(visited, block.ID)
+
+		// If a specific version is requested, use that digest directly
+		if block.FromBlockVersion != "" {
+			// Find the parent block to get its original 'from' reference
+			var parentBlock types.Block
+			found := false
+			for _, b := range e.project.Blocks {
+				if b.ID == block.FromBlock {
+					parentBlock = b
+					found = true
+					break
+				}
+			}
+			if !found {
+				return "", "", fmt.Errorf("parent block %s not found in project", block.FromBlock)
+			}
+
+			// If parent block has a 'from' field, use that as the image reference
+			if parentBlock.From != "" {
+				return parentBlock.From, block.FromBlockVersion, nil
+			}
+
+			// Otherwise use the digest directly
+			return block.FromBlockVersion, block.FromBlockVersion, nil
+		}
 
 		// Check if parent block has been executed and has a digest
 		state, err := e.store.LoadBlockState(block.FromBlock)
@@ -263,7 +330,28 @@ func (e *Engine) resolveParentWithVisited(ctx context.Context, block types.Block
 			}
 		}
 
-		// For from_block, the stored digest is the image ID/reference; use it for both ref and hash parent
+		// For from_block, we need to get the original image reference from the parent block
+		// Find the parent block to get its original 'from' reference
+		var parentBlock types.Block
+		found := false
+		for _, b := range e.project.Blocks {
+			if b.ID == block.FromBlock {
+				parentBlock = b
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", "", fmt.Errorf("parent block %s not found in project", block.FromBlock)
+		}
+
+		// If parent block has a 'from' field, use that as the image reference
+		if parentBlock.From != "" {
+			return parentBlock.From, state.Digest, nil
+		}
+
+		// If parent block also uses from_block, we need to resolve it recursively
+		// For now, use the digest as fallback (this might need further refinement)
 		return state.Digest, state.Digest, nil
 	}
 
@@ -295,196 +383,10 @@ func sanitizeForDockerTag(blockID string) string {
 	return sanitized
 }
 
-// executeBlock executes a single block and returns the resulting digest
-func (e *Engine) executeBlock(ctx context.Context, block types.Block, parentImageRef string) (string, int, error) {
-	// Parse COPY commands and remove them from the cmd
-	copyInstructions := parseCopyCommands(block.Cmd)
-	remainingCmd := removeCopyCommands(block.Cmd)
-	
-	fmt.Printf("DEBUG: Original cmd: %q\n", block.Cmd)
-	fmt.Printf("DEBUG: Remaining cmd: %q\n", remainingCmd)
-	
-	// Create container configuration
-	config := docker.ContainerConfig{
-		Image:     parentImageRef,
-		Cmd:       remainingCmd,
-		Workdir:   block.Workdir,
-		Env:       block.Env,
-		Mounts:    e.convertMounts(block.Mounts),
-		Network:   block.Network,
-		Resources: block.Resources,
-	}
-
-	// Create container
-	containerID, err := e.dockerClient.CreateContainer(ctx, config)
-	if err != nil {
-		return "", -1, fmt.Errorf("failed to create container: %w", err)
-	}
-
-	// Execute COPY commands before starting container
-	if err := e.executeCopyCommands(ctx, block, containerID, copyInstructions); err != nil {
-		e.dockerClient.RemoveContainer(ctx, containerID)
-		return "", -1, fmt.Errorf("failed to execute COPY commands: %w", err)
-	}
-
-	// Start container
-	fmt.Printf("DEBUG: Starting container %s\n", containerID)
-	if err := e.dockerClient.StartContainer(ctx, containerID); err != nil {
-		e.dockerClient.RemoveContainer(ctx, containerID)
-		return "", -1, fmt.Errorf("failed to start container: %w", err)
-	}
-	fmt.Printf("DEBUG: Container started successfully\n")
-
-	// Prepare logs: clear previous and start following logs, appending incrementally
-	_ = e.store.ClearLogs(block.ID)
-	logsDone := make(chan struct{})
-	go func() {
-		defer close(logsDone)
-		_ = e.dockerClient.GetLogs(ctx, containerID, storeAppendWriter{store: e.store, id: block.ID}, true)
-	}()
-
-	// Wait for container to finish
-	exitCode, err := e.dockerClient.WaitContainer(ctx, containerID)
-	if err != nil {
-		e.dockerClient.RemoveContainer(ctx, containerID)
-		return "", -1, fmt.Errorf("failed to wait for container: %w", err)
-	}
-
-	// Give the logs follower a brief moment to drain remaining output
-	select {
-	case <-logsDone:
-	case <-time.After(500 * time.Millisecond):
-	}
-
-	// Get filesystem diff
-	diff, err := e.dockerClient.DiffContainer(ctx, containerID)
-	if err != nil {
-		fmt.Printf("Warning: failed to get diff: %v\n", err)
-	} else {
-		// Save diff
-		if err := e.store.SaveDiff(block.ID, diff); err != nil {
-			fmt.Printf("Warning: failed to save diff: %v\n", err)
-		}
-	}
-
-	// Commit container if not ephemeral and successful
-	var digest string
-	if !block.Ephemeral && exitCode == 0 {
-		sanitizedID := sanitizeForDockerTag(block.ID)
-		tag := fmt.Sprintf("dockstep-%s-%d", sanitizedID, time.Now().Unix())
-		digest, err = e.dockerClient.CommitContainer(ctx, containerID, tag)
-		if err != nil {
-			fmt.Printf("Warning: failed to commit container: %v\n", err)
-		} else {
-			// Save image digest
-			if err := e.store.SaveImageDigest(block.ID, digest); err != nil {
-				fmt.Printf("Warning: failed to save image digest: %v\n", err)
-			}
-			// Generate Dockerfile snapshot for this block at time of build and persist by digest
-			if df, dfErr := export.GenerateDockerfile(e.project, block.ID, types.DockerfileOptions{}); dfErr != nil {
-				fmt.Printf("Warning: failed to generate Dockerfile snapshot: %v\n", dfErr)
-			} else {
-				if err := e.store.SaveDockerfileSnapshot(digest, df); err != nil {
-					fmt.Printf("Warning: failed to save Dockerfile snapshot: %v\n", err)
-				}
-			}
-			// Append image history (without embedding dockerfile to keep JSONL light)
-			_ = e.store.SaveImageHistory(block.ID, types.ImageRecord{Tag: tag, Digest: digest, Timestamp: time.Now()})
-		}
-	}
-
-	// Remove container
-	if err := e.dockerClient.RemoveContainer(ctx, containerID); err != nil {
-		fmt.Printf("Warning: failed to remove container: %v\n", err)
-	}
-
-	return digest, exitCode, nil
-}
-
-// convertMounts converts dockstep mounts to Docker mount strings
-func (e *Engine) convertMounts(mounts []types.Mount) []string {
-	var dockerMounts []string
-	for _, mount := range mounts {
-		source := mount.Source
-		// Resolve relative paths to absolute paths based on project root
-		if !filepath.IsAbs(source) {
-			source = filepath.Join(e.projectRoot, source)
-		}
-		mountStr := source + ":" + mount.Target
-		if mount.Mode != "" {
-			mountStr += ":" + mount.Mode
-		}
-		dockerMounts = append(dockerMounts, mountStr)
-	}
-	return dockerMounts
-}
-
-// parseCopyCommands parses COPY commands from a block's cmd field
-func parseCopyCommands(cmd string) []types.CopyInstruction {
-	var instructions []types.CopyInstruction
-
-	lines := strings.Split(cmd, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(strings.ToUpper(line), "COPY") {
-			continue
-		}
-
-		// Parse COPY command: COPY [--chown=user:group] source dest
-		parts := strings.Fields(line)
-		if len(parts) < 3 {
-			continue
-		}
-
-		instruction := types.CopyInstruction{}
-		i := 1 // Skip "COPY"
-
-		// Check for --chown flag
-		if i < len(parts) && strings.HasPrefix(parts[i], "--chown=") {
-			instruction.Chown = strings.TrimPrefix(parts[i], "--chown=")
-			i++
-		}
-
-		// Source and destination
-		if i+1 < len(parts) {
-			instruction.Source = parts[i]
-			instruction.Dest = parts[i+1]
-			instructions = append(instructions, instruction)
-		}
-	}
-
-	return instructions
-}
-
-// removeCopyCommands removes COPY commands from a cmd string and returns the remaining commands
-func removeCopyCommands(cmd string) string {
-	lines := strings.Split(cmd, "\n")
-	var remainingLines []string
-	
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue // Skip empty lines
-		}
-		
-		// Skip COPY commands
-		if strings.HasPrefix(strings.ToUpper(trimmed), "COPY") {
-			continue
-		}
-		
-		remainingLines = append(remainingLines, line) // Keep original formatting
-	}
-	
-	return strings.Join(remainingLines, "\n")
-}
-
-// executeCopyCommands executes COPY commands for a block
-func (e *Engine) executeCopyCommands(ctx context.Context, block types.Block, containerID string, instructions []types.CopyInstruction) error {
-	if len(instructions) == 0 {
-		return nil
-	}
-	
-	fmt.Printf("DEBUG: Found %d COPY instructions\n", len(instructions))
+// buildBlock builds a single block and returns the resulting digest
+func (e *Engine) buildBlock(ctx context.Context, block types.Block, parentImageRef string) (string, error) {
+	// Generate Dockerfile content
+	dockerfileContent := e.generateDockerfile(block, parentImageRef)
 
 	// Determine context directory
 	contextDir := e.contextPath
@@ -496,66 +398,197 @@ func (e *Engine) executeCopyCommands(ctx context.Context, block types.Block, con
 		}
 	}
 
-	// Check for .dockerignore
-	dockerignorePath := filepath.Join(contextDir, ".dockerignore")
-	if _, err := os.Stat(dockerignorePath); os.IsNotExist(err) {
-		dockerignorePath = ""
+	// Create temporary directory for build context
+	tempDir, err := os.MkdirTemp("", "dockstep-build-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Write Dockerfile to temp directory
+	dockerfilePath := filepath.Join(tempDir, "Dockerfile")
+	if err := os.WriteFile(dockerfilePath, []byte(dockerfileContent), 0644); err != nil {
+		return "", fmt.Errorf("failed to write Dockerfile: %w", err)
 	}
 
-	for _, instruction := range instructions {
-		fmt.Printf("DEBUG: Processing COPY %s -> %s\n", instruction.Source, instruction.Dest)
-		// Create tar for the source path
-		sourcePath := filepath.Join(contextDir, instruction.Source)
-		fmt.Printf("DEBUG: Source path: %s\n", sourcePath)
-		tarReader, err := buildcontext.CreateContextTar(sourcePath, dockerignorePath)
+	// Copy build context files to temp directory
+	if err := e.copyBuildContext(contextDir, tempDir); err != nil {
+		return "", fmt.Errorf("failed to copy build context: %w", err)
+	}
+
+	// Generate tag for the image
+	sanitizedID := sanitizeForDockerTag(block.ID)
+	tag := fmt.Sprintf("dockstep-%s-%d", sanitizedID, time.Now().Unix())
+
+	// Build the image using temp directory as context
+	fmt.Printf("DEBUG: Building image with tag: %s\n", tag)
+	fmt.Printf("DEBUG: Dockerfile content:\n%s\n", dockerfileContent)
+	digest, err := e.buildImageWithLogs(ctx, tempDir, dockerfileContent, tag, block.ID)
+	if err != nil {
+		fmt.Printf("DEBUG: Build failed with error: %v\n", err)
+		return "", fmt.Errorf("failed to build image: %w", err)
+	}
+	fmt.Printf("DEBUG: Build succeeded with digest: %s\n", digest)
+
+	// Save image digest
+	if err := e.store.SaveImageDigest(block.ID, digest); err != nil {
+		fmt.Printf("Warning: failed to save image digest: %v\n", err)
+	}
+
+	// Save the actual Dockerfile content that was used to build this image
+	if err := e.store.SaveDockerfileSnapshot(digest, dockerfileContent); err != nil {
+		fmt.Printf("Warning: failed to save Dockerfile snapshot: %v\n", err)
+	}
+
+	// Append image history
+	_ = e.store.SaveImageHistory(block.ID, types.ImageRecord{Tag: tag, Digest: digest, Timestamp: time.Now(), Dockerfile: dockerfileContent})
+
+	return digest, nil
+}
+
+// generateDockerfile generates Dockerfile content for a block
+func (e *Engine) generateDockerfile(block types.Block, parentImageRef string) string {
+	var lines []string
+
+	// Add FROM directive
+	lines = append(lines, fmt.Sprintf("FROM %s", parentImageRef))
+	lines = append(lines, "")
+
+	// Add block instructions
+	for _, instruction := range block.Instructions {
+		lines = append(lines, instruction)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// buildImageWithLogs builds an image and captures the build logs
+func (e *Engine) buildImageWithLogs(ctx context.Context, contextDir, dockerfileContent, tag, blockID string) (string, error) {
+	// Create log callback that appends to store
+	logCallback := func(logChunk []byte) {
+		if err := e.store.AppendLogs(blockID, logChunk); err != nil {
+			fmt.Printf("Warning: failed to append build logs: %v\n", err)
+		}
+	}
+
+	// Build with log streaming
+	digest, err := e.dockerClient.BuildImageWithLogs(ctx, contextDir, dockerfileContent, tag, logCallback)
+	if err != nil {
+		// Even if build fails, we want to keep the logs for debugging
+		return "", err
+	}
+
+	return digest, nil
+}
+
+// createContextTar creates a tar archive of the build context
+func (e *Engine) createContextTar(contextDir string) (io.ReadCloser, error) {
+	pipeReader, pipeWriter := io.Pipe()
+
+	go func() {
+		defer pipeWriter.Close()
+
+		tarWriter := tar.NewWriter(pipeWriter)
+		defer tarWriter.Close()
+
+		err := filepath.Walk(contextDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+
+			// Skip the root directory itself
+			if path == contextDir {
+				return nil
+			}
+
+			// Get relative path
+			relPath, err := filepath.Rel(contextDir, path)
+			if err != nil {
+				return err
+			}
+
+			// Create tar header
+			header, err := tar.FileInfoHeader(info, "")
+			if err != nil {
+				return err
+			}
+			header.Name = relPath
+
+			// Write header
+			if err := tarWriter.WriteHeader(header); err != nil {
+				return err
+			}
+
+			// Write file content if it's a regular file
+			if info.Mode().IsRegular() {
+				file, err := os.Open(path)
+				if err != nil {
+					return err
+				}
+				defer file.Close()
+
+				_, err = io.Copy(tarWriter, file)
+				if err != nil {
+					return err
+				}
+			}
+
+			return nil
+		})
+
 		if err != nil {
-			return fmt.Errorf("failed to create context tar for %s: %w", instruction.Source, err)
+			pipeWriter.CloseWithError(err)
 		}
+	}()
 
-		// Resolve destination path
-		destPath := instruction.Dest
-		if destPath == "." {
-			// Use the block's working directory, or default to "/"
-			if block.Workdir != "" {
-				destPath = block.Workdir
-			} else {
-				destPath = "/"
-			}
-		} else if !strings.HasPrefix(destPath, "/") {
-			// Make relative paths absolute
-			if block.Workdir != "" {
-				destPath = filepath.Join(block.Workdir, destPath)
-			} else {
-				destPath = "/" + destPath
-			}
-		}
-		
-		// For single file copies, ensure destination is a directory
-		// Docker's CopyToContainer expects a directory path for extraction
-		if !strings.HasSuffix(destPath, "/") {
-			destPath = destPath + "/"
-		}
-
-		// Copy to container
-		fmt.Printf("DEBUG: Copying to container %s at path %s\n", containerID, destPath)
-		if err := e.dockerClient.CopyToContainer(ctx, containerID, destPath, tarReader); err != nil {
-			return fmt.Errorf("failed to copy %s to %s: %w", instruction.Source, destPath, err)
-		}
-		fmt.Printf("DEBUG: Successfully copied %s to %s\n", instruction.Source, destPath)
-	}
-
-	return nil
+	return pipeReader, nil
 }
 
-// storeAppendWriter implements io.Writer to append logs to the store incrementally
-type storeAppendWriter struct {
-	store *store.Store
-	id    string
-}
+// copyBuildContext copies files from source to destination directory
+func (e *Engine) copyBuildContext(srcDir, dstDir string) error {
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
 
-func (w storeAppendWriter) Write(p []byte) (int, error) {
-	if err := w.store.AppendLogs(w.id, p); err != nil {
-		return 0, err
-	}
-	return len(p), nil
+		// Skip the source directory itself
+		if path == srcDir {
+			return nil
+		}
+
+		// Get relative path
+		relPath, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+
+		// Skip .dockstep directory
+		if strings.HasPrefix(relPath, ".dockstep") {
+			return nil
+		}
+
+		// Create destination path
+		dstPath := filepath.Join(dstDir, relPath)
+
+		if info.IsDir() {
+			// Create directory
+			return os.MkdirAll(dstPath, info.Mode())
+		} else {
+			// Copy file
+			srcFile, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer srcFile.Close()
+
+			dstFile, err := os.Create(dstPath)
+			if err != nil {
+				return err
+			}
+			defer dstFile.Close()
+
+			_, err = io.Copy(dstFile, srcFile)
+			return err
+		}
+	})
 }

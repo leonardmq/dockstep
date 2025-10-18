@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"strings"
 
 	"dockstep.dev/types"
 )
@@ -17,31 +16,31 @@ func Validate(project *types.Project) error {
 		return fmt.Errorf("name is required")
 	}
 
-	if len(project.Blocks) == 0 {
-		return fmt.Errorf("at least one block is required")
-	}
+	// Allow empty projects - users can start with no blocks
 
-	// Check for duplicate block IDs
-	blockIDs := make(map[string]bool)
-	for _, block := range project.Blocks {
-		if block.ID == "" {
-			return fmt.Errorf("block ID cannot be empty")
+	// Check for duplicate block IDs (only if there are blocks)
+	if len(project.Blocks) > 0 {
+		blockIDs := make(map[string]bool)
+		for _, block := range project.Blocks {
+			if block.ID == "" {
+				return fmt.Errorf("block ID cannot be empty")
+			}
+
+			if blockIDs[block.ID] {
+				return fmt.Errorf("duplicate block ID: %s", block.ID)
+			}
+			blockIDs[block.ID] = true
+
+			// Validate block
+			if err := validateBlock(block, blockIDs); err != nil {
+				return fmt.Errorf("block %s: %w", block.ID, err)
+			}
 		}
 
-		if blockIDs[block.ID] {
-			return fmt.Errorf("duplicate block ID: %s", block.ID)
+		// Check for circular dependencies
+		if err := checkCircularDependencies(project.Blocks); err != nil {
+			return err
 		}
-		blockIDs[block.ID] = true
-
-		// Validate block
-		if err := validateBlock(block, blockIDs); err != nil {
-			return fmt.Errorf("block %s: %w", block.ID, err)
-		}
-	}
-
-	// Check for circular dependencies
-	if err := checkCircularDependencies(project.Blocks); err != nil {
-		return err
 	}
 
 	return nil
@@ -65,37 +64,9 @@ func validateBlock(block types.Block, allBlockIDs map[string]bool) error {
 		}
 	}
 
-	// Validate network mode
-	if block.Network != "" {
-		validNetworks := []types.NetworkMode{
-			types.NetworkDefault,
-			types.NetworkNone,
-			types.NetworkHost,
-		}
-		valid := false
-		for _, validNetwork := range validNetworks {
-			if block.Network == validNetwork {
-				valid = true
-				break
-			}
-		}
-		if !valid {
-			return fmt.Errorf("invalid network mode: %s", block.Network)
-		}
-	}
-
-	// Validate environment variables format
-	for _, env := range block.Env {
-		if !strings.Contains(env, "=") {
-			return fmt.Errorf("invalid environment variable format: %s (must be KEY=VALUE)", env)
-		}
-	}
-
-	// Validate mounts
-	for _, mount := range block.Mounts {
-		if mount.Source == "" || mount.Target == "" {
-			return fmt.Errorf("mount source and target are required")
-		}
+	// Validate instructions array is not empty
+	if len(block.Instructions) == 0 {
+		return fmt.Errorf("instructions array cannot be empty")
 	}
 
 	return nil

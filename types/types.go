@@ -16,35 +16,6 @@ const (
 	StatusSkipped BlockStatus = "skipped"
 )
 
-// NetworkMode represents the network configuration for a block
-type NetworkMode string
-
-const (
-	NetworkDefault NetworkMode = "default"
-	NetworkNone    NetworkMode = "none"
-	NetworkHost    NetworkMode = "host"
-)
-
-// Mount represents a volume mount configuration
-type Mount struct {
-	Source string `yaml:"source"`
-	Target string `yaml:"target"`
-	Mode   string `yaml:"mode,omitempty"`
-}
-
-// CopyInstruction represents a COPY command parsed from block cmd
-type CopyInstruction struct {
-	Source string
-	Dest   string
-	Chown  string
-}
-
-// Resources represents resource constraints for a block
-type Resources struct {
-	CPU    string `yaml:"cpu,omitempty"`
-	Memory string `yaml:"memory,omitempty"`
-}
-
 // ExportConfig represents export settings for a block
 type ExportConfig struct {
 	Artifacts  []string          `yaml:"artifacts,omitempty"`
@@ -55,25 +26,18 @@ type ExportConfig struct {
 
 // Block represents a single build step
 type Block struct {
-	ID        string        `yaml:"id"`
-	From      string        `yaml:"from,omitempty"`
-	FromBlock string        `yaml:"from_block,omitempty"`
-	Workdir   string        `yaml:"workdir,omitempty"`
-	Env       []string      `yaml:"env,omitempty"`
-	Mounts    []Mount       `yaml:"mounts,omitempty"`
-	Cmd       string        `yaml:"cmd"`
-	Context   string        `yaml:"context,omitempty"`
-	Ephemeral bool          `yaml:"ephemeral,omitempty"`
-	Resources *Resources    `yaml:"resources,omitempty"`
-	Network   NetworkMode   `yaml:"network,omitempty"`
-	Export    *ExportConfig `yaml:"export,omitempty"`
+	ID               string        `yaml:"id"`
+	From             string        `yaml:"from,omitempty"`
+	FromBlock        string        `yaml:"from_block,omitempty"`
+	FromBlockVersion string        `yaml:"from_block_version,omitempty"`
+	Instructions     []string      `yaml:"instructions"`
+	Context          string        `yaml:"context,omitempty"`
+	Export           *ExportConfig `yaml:"export,omitempty"`
 }
 
 // Settings represents default settings for the project
 type Settings struct {
-	Network   NetworkMode `yaml:"network,omitempty"`
-	Shell     string      `yaml:"shell,omitempty"`
-	Resources *Resources  `yaml:"resources,omitempty"`
+	// No settings needed for simplified schema
 }
 
 // Project represents the complete dockstep configuration

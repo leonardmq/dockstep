@@ -1,2 +1,0 @@
-This is a test file for COPY command testing.
-It should be copied to the container.

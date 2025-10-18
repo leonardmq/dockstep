@@ -1,37 +1,33 @@
 version: "1.0"
 name: "basic-example"
 
-settings:
-  network: "default"
-  shell: "/bin/sh"
+settings: {}
 
 blocks:
   - id: "base"
     from: "alpine:latest"
-    cmd: |
-      echo "Setting up base environment"
-      apk add --no-cache bash curl git
+    instructions:
+      - "RUN echo 'Setting up base environment'"
+      - "RUN apk add --no-cache bash curl git"
 
   - id: "deps"
     from_block: "base"
-    workdir: "/app"
-    env:
-      - "NODE_ENV=production"
-    cmd: |
-      echo "Installing dependencies"
-      apk add --no-cache nodejs npm
-      npm install -g typescript
+    instructions:
+      - "WORKDIR /app"
+      - "ENV NODE_ENV=production"
+      - "RUN echo 'Installing dependencies'"
+      - "RUN apk add --no-cache nodejs npm"
+      - "RUN npm install -g typescript"
 
   - id: "app"
     from_block: "deps"
-    workdir: "/app"
-    env:
-      - "NODE_ENV=production"
-      - "PORT=3000"
-    cmd: |
-      echo "Setting up application"
-      mkdir -p /app/src
-      echo 'console.log("Hello from dockstep!");' > /app/src/index.js
+    instructions:
+      - "WORKDIR /app"
+      - "ENV NODE_ENV=production"
+      - "ENV PORT=3000"
+      - "RUN echo 'Setting up application'"
+      - "RUN mkdir -p /app/src"
+      - "RUN echo 'console.log(\"Hello from dockstep!\");' > /app/src/index.js"
     export:
       labels:
         maintainer: "dockstep"

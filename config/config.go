@@ -29,30 +29,7 @@ func Parse(path string) (*types.Project, error) {
 
 // applyDefaults sets default values for optional fields
 func applyDefaults(project *types.Project) {
-	// Set default network if not specified
-	if project.Settings.Network == "" {
-		project.Settings.Network = types.NetworkDefault
-	}
-
-	// Set default shell if not specified
-	if project.Settings.Shell == "" {
-		project.Settings.Shell = "/bin/sh"
-	}
-
-	// Apply settings defaults to blocks
-	for i := range project.Blocks {
-		block := &project.Blocks[i]
-
-		// Apply network default
-		if block.Network == "" {
-			block.Network = project.Settings.Network
-		}
-
-		// Apply resources default
-		if block.Resources == nil && project.Settings.Resources != nil {
-			block.Resources = project.Settings.Resources
-		}
-	}
+	// No defaults needed for simplified schema
 }
 
 // FindConfigFile searches for dockstep.yaml in the given directory and parent directories

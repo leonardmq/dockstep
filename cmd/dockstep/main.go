@@ -123,7 +123,7 @@ func executeCommand(ctx context.Context, command string, args []string, engine *
 	case "diff":
 		return cmdDiff(ctx, args, engine, store)
 	case "ui":
-		return cmdUI(args, engine, store)
+		return cmdUI(args, engine, store, dockerClient)
 	case "export":
 		return cmdExport(ctx, args, engine, store, dockerClient)
 	default:

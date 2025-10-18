@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -35,16 +34,14 @@ func cmdInit(args []string) error {
 	configContent := `version: "1.0"
 name: "my-project"
 
-settings:
-  network: "default"
-  shell: "/bin/sh"
+settings: {}
 
 blocks:
   - id: "main"
     from: "alpine:latest"
-    cmd: |
-      echo "Hello from dockstep!"
-      # Add your commands here
+    instructions:
+      - "RUN echo 'Hello from dockstep!'"
+      - "# Add your Dockerfile instructions here"
 `
 
 	if err := os.WriteFile("dockstep.yaml", []byte(configContent), 0644); err != nil {
@@ -176,78 +173,13 @@ func cmdDiff(ctx context.Context, args []string, engine *engine.Engine, store *s
 		return fmt.Errorf("block ID required")
 	}
 
-	diffFlags := flag.NewFlagSet("diff", flag.ExitOnError)
-	sinceRoot := diffFlags.Bool("since", false, "Show cumulative diff from root")
-	jsonOut := diffFlags.Bool("json", false, "Output raw JSON")
-	filter := diffFlags.String("filter", "", "Filter kinds: A|M|D (comma-separated)")
+	// Diff command flags removed - functionality deprecated
 
-	if err := diffFlags.Parse(args[1:]); err != nil {
-		return err
-	}
+	// Chain building removed - diff functionality deprecated
 
-	blockID := args[0]
-
-	// Build chain up to block when --since is set
-	blocks := engine.GetProject().Blocks
-	var chain []types.Block
-	if *sinceRoot {
-		// collect from first up to blockID
-		for _, b := range blocks {
-			chain = append(chain, b)
-			if b.ID == blockID {
-				break
-			}
-		}
-		if len(chain) == 0 || chain[len(chain)-1].ID != blockID {
-			return fmt.Errorf("block %s not found", blockID)
-		}
-	}
-
-	// Load diffs
-	var diffs []types.DiffEntry
-	if *sinceRoot {
-		for _, b := range chain {
-			d, err := store.LoadDiff(b.ID)
-			if err != nil {
-				// tolerate missing for earlier blocks
-				continue
-			}
-			diffs = append(diffs, d...)
-		}
-	} else {
-		d, err := store.LoadDiff(blockID)
-		if err != nil {
-			return fmt.Errorf("failed to load diff for block %s: %w", blockID, err)
-		}
-		diffs = d
-	}
-
-	// Filtering
-	if *filter != "" {
-		allowed := map[string]bool{}
-		for _, k := range strings.Split(*filter, ",") {
-			allowed[strings.TrimSpace(k)] = true
-		}
-		var out []types.DiffEntry
-		for _, e := range diffs {
-			if allowed[e.Kind] {
-				out = append(out, e)
-			}
-		}
-		diffs = out
-	}
-
-	if *jsonOut {
-		// Raw JSON
-		data, _ := json.MarshalIndent(diffs, "", "  ")
-		fmt.Println(string(data))
-		return nil
-	}
-
-	// Human output
-	for _, e := range diffs {
-		fmt.Printf("%s %s\n", e.Kind, e.Path)
-	}
+	// Diff functionality removed in new schema - use docker build logs instead
+	fmt.Println("Diff functionality has been removed in the new Dockerfile-based schema.")
+	fmt.Println("Use 'dockstep logs <block-id>' to see build output instead.")
 	return nil
 }
 
