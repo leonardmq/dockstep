@@ -21,6 +21,8 @@ Building complex Docker images is often inefficient. You write a large Dockerfil
 
 ## Getting Started
 
+> **⚠️ Prerequisites**: Before using Dockstep, make sure you have Docker Engine installed and the Docker daemon running. Dockstep requires Docker to build and manage container images.
+
 ### One-Line Install (Recommended)
 ```bash
 curl -sSL https://raw.githubusercontent.com/leonardmq/dockstep/main/scripts/install.sh | bash
