@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -33,6 +35,7 @@ type uiServer struct {
 	dockerClient *docker.Client
 	busyMu       sync.Mutex
 	isBusy       bool
+	token        string
 }
 
 func (s *uiServer) setBusy(b bool) bool {
@@ -49,23 +52,60 @@ func (s *uiServer) setBusy(b bool) bool {
 	return true
 }
 
+func (s *uiServer) requireAuth(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "Authentication required", http.StatusUnauthorized)
+			return
+		}
+
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if token != s.token {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		handler(w, r)
+	}
+}
+
 func (s *uiServer) routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// API
-	mux.HandleFunc("/api/project", s.handleProject)
-	mux.HandleFunc("/api/block", s.handleBlock)
-	mux.HandleFunc("/api/image", s.handleImage)
-	mux.HandleFunc("/api/export/dockerfile", s.handleExportDockerfile)
-	mux.HandleFunc("/api/dockerfile", s.handleDockerfileByDigest)
-	mux.HandleFunc("/api/status", s.handleStatus)
-	mux.HandleFunc("/api/up", s.handleUp)
-	mux.HandleFunc("/api/run", s.handleRun)
-	mux.HandleFunc("/api/logs", s.handleLogs)
-	mux.HandleFunc("/api/diff", s.handleDiff)
-	mux.HandleFunc("/api/config", s.handleConfig)
-	mux.HandleFunc("/api/history", s.handleHistory)
-	mux.HandleFunc("/api/lineage", s.handleLineage)
+	// API - with authentication if token is set
+	if s.token != "" {
+		mux.HandleFunc("/api/project", s.requireAuth(s.handleProject))
+		mux.HandleFunc("/api/block", s.requireAuth(s.handleBlock))
+		mux.HandleFunc("/api/image", s.requireAuth(s.handleImage))
+		mux.HandleFunc("/api/export/dockerfile", s.requireAuth(s.handleExportDockerfile))
+		mux.HandleFunc("/api/dockerfile", s.requireAuth(s.handleDockerfileByDigest))
+		mux.HandleFunc("/api/status", s.requireAuth(s.handleStatus))
+		mux.HandleFunc("/api/up", s.requireAuth(s.handleUp))
+		mux.HandleFunc("/api/run", s.requireAuth(s.handleRun))
+		mux.HandleFunc("/api/logs", s.requireAuth(s.handleLogs))
+		mux.HandleFunc("/api/diff", s.requireAuth(s.handleDiff))
+		mux.HandleFunc("/api/config", s.requireAuth(s.handleConfig))
+		mux.HandleFunc("/api/history", s.requireAuth(s.handleHistory))
+		mux.HandleFunc("/api/lineage", s.requireAuth(s.handleLineage))
+	} else {
+		// No authentication required
+		mux.HandleFunc("/api/project", s.handleProject)
+		mux.HandleFunc("/api/block", s.handleBlock)
+		mux.HandleFunc("/api/image", s.handleImage)
+		mux.HandleFunc("/api/export/dockerfile", s.handleExportDockerfile)
+		mux.HandleFunc("/api/dockerfile", s.handleDockerfileByDigest)
+		mux.HandleFunc("/api/status", s.handleStatus)
+		mux.HandleFunc("/api/up", s.handleUp)
+		mux.HandleFunc("/api/run", s.handleRun)
+		mux.HandleFunc("/api/logs", s.handleLogs)
+		mux.HandleFunc("/api/diff", s.handleDiff)
+		mux.HandleFunc("/api/config", s.handleConfig)
+		mux.HandleFunc("/api/history", s.handleHistory)
+		mux.HandleFunc("/api/lineage", s.handleLineage)
+	}
 
 	// Static UI: serve built SPA when present; fallback to placeholder
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -706,53 +746,59 @@ func (s *uiServer) handleLineage(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(lineage)
 }
 
+func generateToken() (string, error) {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	token := make([]byte, 32)
+	_, err := rand.Read(token)
+	if err != nil {
+		return "", err
+	}
+
+	for i := range token {
+		token[i] = charset[token[i]%byte(len(charset))]
+	}
+	return string(token), nil
+}
+
 func cmdUI(args []string, eng *engine.Engine, st *store.Store, dockerClient *docker.Client) error {
-	fs := flagSet("ui")
+	fs := flag.NewFlagSet("ui", flag.ExitOnError)
+	host := fs.String("host", "localhost", "Host to bind UI server to")
 	port := fs.Int("port", 7689, "Port to serve UI")
 	open := fs.Bool("open", true, "Open browser")
+	auth := fs.Bool("auth", false, "Enable token authentication")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	srv := &uiServer{engine: eng, store: st, dockerClient: dockerClient}
-	httpSrv := &http.Server{Addr: ":" + strconv.Itoa(*port), Handler: srv.routes()}
+	// Check if we need token authentication
+	var token string
+	if *auth {
+		var err error
+		token, err = generateToken()
+		if err != nil {
+			return fmt.Errorf("failed to generate token: %w", err)
+		}
+		fmt.Printf("\nAccess token: %s\n", token)
+		fmt.Println("You will need to enter this token in the browser")
+	} else if *host == "0.0.0.0" {
+		// Show warning that binding to 0.0.0.0 exposes the UI to your network
+		fmt.Println("Binding to 0.0.0.0 exposes the UI to your network. Use the --auth flag to enable token authentication.")
+	}
+
+	fmt.Printf("token: %s\n", token)
+	srv := &uiServer{engine: eng, store: st, dockerClient: dockerClient, token: token}
+	httpSrv := &http.Server{Addr: *host + ":" + strconv.Itoa(*port), Handler: srv.routes()}
 
 	go func() {
 		if *open {
 			time.Sleep(300 * time.Millisecond)
-			_ = exec.Command("open", fmt.Sprintf("http://localhost:%d/", *port)).Start()
+			_ = exec.Command("open", fmt.Sprintf("http://%s:%d/", *host, *port)).Start()
 		}
 	}()
 
-	log.Printf("dockstep UI listening on http://localhost:%d\n", *port)
+	log.Printf("dockstep UI listening on http://%s:%d\n", *host, *port)
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
 }
-
-// minimal flagset to avoid global conflicts
-func flagSet(name string) *simpleFlagSet {
-	return &simpleFlagSet{name: name, values: map[string]string{}}
-}
-
-type simpleFlagSet struct {
-	name   string
-	values map[string]string
-}
-
-func (s *simpleFlagSet) Int(name string, value int, usage string) *int {
-	v := value
-	s.values[name] = strconv.Itoa(v)
-	return &v
-}
-func (s *simpleFlagSet) Bool(name string, value bool, usage string) *bool {
-	v := value
-	if v {
-		s.values[name] = "true"
-	} else {
-		s.values[name] = "false"
-	}
-	return &v
-}
-func (s *simpleFlagSet) Parse(args []string) error { return nil }

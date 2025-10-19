@@ -26,6 +26,14 @@ var (
 )
 
 func main() {
+	// Check for help flags before parsing other flags
+	for _, arg := range os.Args[1:] {
+		if arg == "-h" || arg == "--help" {
+			printUsage()
+			os.Exit(0)
+		}
+	}
+
 	flag.Parse()
 
 	if len(flag.Args()) == 0 {
@@ -162,12 +170,22 @@ Commands:
   version                 Show version information
 
 Global flags:
-  -project <path>         Project root directory (default: .)
-  -context <docker-context> Docker context name
-  -quiet                  Reduce output
-  -no-color               Disable ANSI colors
-  -debug                  Enable debug output
+  --project <path>         Project root directory (default: .)
+  --context <docker-context> Docker context name
+  --quiet                  Reduce output
+  --no-color               Disable ANSI colors
+  --debug                  Enable debug output
+  --help              Show this help message
 
+UI flags:
+  --host <address>         Host to bind UI server to (default: localhost)
+  --port <number>          Port to bind UI server to (default: 7689)
+  --open                   Open browser automatically (default: true)
+  --auth                   Enable token authentication (default: false)
+
+Examples:
+  dockstep ui --host 0.0.0.0 --port 8080 --auth # Bind to all interfaces on port 8080 and enable token authentication
+  dockstep ui --host localhost --port 3000      # Bind to localhost on port 3000
 `)
 }
 

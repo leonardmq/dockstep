@@ -1,5 +1,36 @@
 import React, { useEffect, useMemo, useState } from 'react'
 
+// Global API fetch wrapper
+let globalToken: string | null = null
+let globalSetToken: ((token: string | null) => void) | null = null
+let globalSetShowTokenModal: ((show: boolean) => void) | null = null
+let globalSetTokenError: ((error: string | null) => void) | null = null
+
+const apiFetch = async (url: string, options: RequestInit = {}): Promise<Response> => {
+  const headers = {
+    ...options.headers,
+  }
+  
+  if (globalToken) {
+    (headers as Record<string, string>)['Authorization'] = `Bearer ${globalToken}`
+  }
+  
+  const response = await fetch(url, {
+    ...options,
+    headers,
+  })
+  
+  if (response.status === 401) {
+    // Token is invalid or expired
+    if (globalSetToken) globalSetToken(null)
+    localStorage.removeItem('dockstep-token')
+    if (globalSetShowTokenModal) globalSetShowTokenModal(true)
+    if (globalSetTokenError) globalSetTokenError('Authentication required. Please enter your access token.')
+  }
+  
+  return response
+}
+
 type BlockStatus = 'pending' | 'cached' | 'running' | 'success' | 'failed' | 'skipped'
 
 type StatusItem = {
@@ -99,6 +130,20 @@ export function App() {
   const [showDockerfileModal, setShowDockerfileModal] = useState(false)
   const [dockerfileModalImage, setDockerfileModalImage] = useState<{ digest: string; tag: string; dockerfile?: string } | null>(null)
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
+  const [token, setToken] = useState<string | null>(null)
+  const [showTokenModal, setShowTokenModal] = useState(false)
+  const [tokenInput, setTokenInput] = useState('')
+  const [tokenError, setTokenError] = useState<string | null>(null)
+  const [authChecked, setAuthChecked] = useState(false)
+  
+  // Update global references when token state changes
+  useEffect(() => {
+    globalToken = token
+    globalSetToken = setToken
+    globalSetShowTokenModal = setShowTokenModal
+    globalSetTokenError = setTokenError
+  }, [token])
+
   useEffect(() => {
     if (theme === 'dark') {
       document.documentElement.classList.add('dark')
@@ -109,13 +154,49 @@ export function App() {
     }
   }, [theme])
 
+  // Check for saved token on mount
   useEffect(() => {
-    fetch('/api/project').then(r => r.json()).then(setProject)
-    const load = () => fetch('/api/status').then(r => r.json()).then(data => setStatus(Array.isArray(data) ? data : []))
-    load()
-    const t = setInterval(load, 2000)
-    return () => clearInterval(t)
+    const savedToken = localStorage.getItem('dockstep-token')
+    if (savedToken) {
+      setToken(savedToken)
+      setAuthChecked(true)
+    } else {
+      // Check if authentication is required by making a test request
+      fetch('/api/project')
+        .then(response => {
+          if (response.status === 401) {
+            setShowTokenModal(true)
+          }
+          setAuthChecked(true)
+        })
+        .catch(() => {
+          // Network error, proceed with normal loading
+          setAuthChecked(true)
+        })
+    }
   }, [])
+
+  useEffect(() => {
+    // Only load data after auth check is complete
+    if (authChecked && (token || !showTokenModal)) {
+      apiFetch('/api/project').then(r => r.json()).then(setProject)
+      const load = () => apiFetch('/api/status').then(r => r.json()).then(data => setStatus(Array.isArray(data) ? data : []))
+      load()
+      const t = setInterval(load, 2000)
+      return () => clearInterval(t)
+    }
+  }, [token, showTokenModal, authChecked])
+
+  // Handle token submission
+  const handleTokenSubmit = async () => {
+    if (!tokenInput.trim()) return
+    
+    setTokenError(null)
+    setToken(tokenInput.trim())
+    localStorage.setItem('dockstep-token', tokenInput.trim())
+    setShowTokenModal(false)
+    setTokenInput('')
+  }
 
   // Save all blocks (used by button and Cmd/Ctrl+S)
   const saveAll = async () => {
@@ -126,7 +207,7 @@ export function App() {
       // Add 0.5 second delay to make save operation visible
       await new Promise(resolve => setTimeout(resolve, 500))
       // refresh project to reflect saved cmds
-      const p = await (await fetch('/api/project')).json()
+      const p = await (await apiFetch('/api/project')).json()
       setProject(p)
       setUnsavedIds([])
       setLastSavedAt(new Date())
@@ -177,9 +258,9 @@ export function App() {
 
 
   const deleteBlock = async (blockId: string) => {
-    const resp = await fetch(`/api/block?id=${encodeURIComponent(blockId)}`, { method: 'DELETE' })
+    const resp = await apiFetch(`/api/block?id=${encodeURIComponent(blockId)}`, { method: 'DELETE' })
     if (resp.ok) {
-      const p = await (await fetch('/api/project')).json()
+      const p = await (await apiFetch('/api/project')).json()
       setProject(p)
       setShowDeleteModal(false)
       setBlockToDelete(null)
@@ -191,7 +272,7 @@ export function App() {
     if (!ok) return
     setRunningById(prev => ({ ...prev, [blockId]: true }))
     try {
-      const resp = await fetch('/api/run', { 
+      const resp = await apiFetch('/api/run', { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ id: blockId, force: true }) 
@@ -205,7 +286,7 @@ export function App() {
   }
 
   const deleteImage = async (digest: string) => {
-    const resp = await fetch(`/api/image?digest=${encodeURIComponent(digest)}`, { method: 'DELETE' })
+    const resp = await apiFetch(`/api/image?digest=${encodeURIComponent(digest)}`, { method: 'DELETE' })
     if (resp.ok) {
       setShowImageDeleteModal(false)
       setImageToDelete(null)
@@ -213,13 +294,15 @@ export function App() {
     }
   }
 
-  // Show loading state while project is being fetched
-  if (!project) {
+  // Show loading state while auth is being checked or project is being fetched
+  if (!authChecked || (!project && !showTokenModal)) {
     return (
       <div className="min-h-screen p-4 font-sans bg-zinc-50 text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100 flex items-center justify-center">
         <div className="text-center">
           <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <div className="text-sm text-zinc-600 dark:text-zinc-400">Loading project...</div>
+          <div className="text-sm text-zinc-600 dark:text-zinc-400">
+            {!authChecked ? 'Checking authentication...' : 'Loading project...'}
+          </div>
         </div>
       </div>
     )
@@ -258,7 +341,7 @@ export function App() {
           </button>
         </div>
         <button className="ml-2 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-zinc-700 dark:text-zinc-200 bg-zinc-900/5 dark:bg-white/5 hover:bg-zinc-900/10 dark:hover:bg-white/10 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40" onClick={async()=>{
-          const txt = await fetch('/api/config').then(r=>r.text())
+          const txt = await apiFetch('/api/config').then(r=>r.text())
           setYamlText(txt)
           setShowYamlModal(true)
         }}>Edit YAML</button>
@@ -405,9 +488,9 @@ export function App() {
             const body: any = { id: blockId }
             if (from) body.from = from
             if (fromBlock) body.from_block = fromBlock
-            const resp = await fetch('/api/block',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+            const resp = await apiFetch('/api/block',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
             if (resp.ok) {
-              const p = await (await fetch('/api/project')).json()
+              const p = await (await apiFetch('/api/project')).json()
               setProject(p)
               setShowAddModal(false)
             }
@@ -430,7 +513,7 @@ export function App() {
               <div className="px-4 py-3 flex items-center justify-end gap-2 border-t border-zinc-200/70 dark:border-zinc-800/80">
                 <button className="px-3 py-1.5 text-sm font-medium rounded-lg text-zinc-700 dark:text-zinc-200 bg-zinc-900/5 dark:bg-white/5 hover:bg-zinc-900/10 dark:hover:bg-white/10 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40" onClick={()=>setShowYamlModal(false)}>Cancel</button>
                 <button className="px-3.5 py-1.5 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-500 dark:bg-blue-500/60 dark:hover:bg-blue-400/90 text-white shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50 active:translate-y-px" onClick={async()=>{
-                  const resp = await fetch('/api/config',{method:'PUT',body:yamlText,headers:{'Content-Type':'text/yaml'}})
+                  const resp = await apiFetch('/api/config',{method:'PUT',body:yamlText,headers:{'Content-Type':'text/yaml'}})
                   if (resp.ok || resp.status===204) {
                     location.reload()
                   }
@@ -536,6 +619,49 @@ export function App() {
           </div>
         </div>
       )}
+      {showTokenModal && (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-black/30" />
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <div className="w-full max-w-md rounded-xl border border-zinc-200/70 dark:border-zinc-800/80 bg-white/80 dark:bg-zinc-900/80 backdrop-blur shadow-xl">
+              <div className="px-4 py-3 border-b border-zinc-200/70 dark:border-zinc-800/80">
+                <div className="text-sm font-medium text-zinc-700 dark:text-zinc-200">Authentication Required</div>
+                <div className="text-xs text-zinc-500 dark:text-zinc-400">Enter your access token to continue</div>
+              </div>
+              <div className="p-4">
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-2">Access Token</label>
+                  <input
+                    type="password"
+                    value={tokenInput}
+                    onChange={e => setTokenInput(e.target.value)}
+                    placeholder="Enter your access token"
+                    className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500/40"
+                    autoFocus
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        handleTokenSubmit()
+                      }
+                    }}
+                  />
+                  {tokenError && (
+                    <div className="mt-2 text-sm text-red-600 dark:text-red-400">{tokenError}</div>
+                  )}
+                </div>
+              </div>
+              <div className="px-4 py-3 flex items-center justify-end gap-2 border-t border-zinc-200/70 dark:border-zinc-800/80">
+                <button
+                  className="px-3.5 py-1.5 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-500 dark:bg-blue-500/60 dark:hover:bg-blue-400/90 text-white shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50 active:translate-y-px"
+                  onClick={handleTokenSubmit}
+                  disabled={!tokenInput.trim()}
+                >
+                  Connect
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -602,14 +728,14 @@ function BlockCell({
   
 
   useEffect(() => {
-    fetch(`/api/logs?id=${encodeURIComponent(id)}`).then(r => (r.ok ? r.text() : Promise.resolve(''))).then(setLogs)
-    fetch(`/api/diff?id=${encodeURIComponent(id)}`).then(r => (r.ok ? r.json() : Promise.resolve([]))).then((arr:any)=>{
+    apiFetch(`/api/logs?id=${encodeURIComponent(id)}`).then(r => (r.ok ? r.text() : Promise.resolve(''))).then(setLogs)
+    apiFetch(`/api/diff?id=${encodeURIComponent(id)}`).then(r => (r.ok ? r.json() : Promise.resolve([]))).then((arr:any)=>{
       setDiff(Array.isArray(arr) ? arr : [])
     })
   }, [id])
   useEffect(()=>{
     if (tab==='images') {
-      fetch(`/api/history?id=${encodeURIComponent(id)}`).then(r=>r.ok?r.json():Promise.resolve([])).then((arr:any[])=>{
+      apiFetch(`/api/history?id=${encodeURIComponent(id)}`).then(r=>r.ok?r.json():Promise.resolve([])).then((arr:any[])=>{
         // normalize timestamps to ISO strings
         setImages(arr.map(x=>({ tag: x.tag, digest: x.digest, timestamp: x.timestamp || '', dockerfile: x.dockerfile })))
       })
@@ -618,7 +744,7 @@ function BlockCell({
 
   useEffect(()=>{
     if (tab==='dockerfile') {
-      fetch('/api/export/dockerfile', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endBlockId: id }) })
+      apiFetch('/api/export/dockerfile', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endBlockId: id }) })
         .then(r => r.ok ? r.text() : '')
         .then(setDockerfile)
     }
@@ -626,7 +752,7 @@ function BlockCell({
 
   useEffect(()=>{
     if (tab==='lineage') {
-      fetch(`/api/lineage?id=${encodeURIComponent(id)}`)
+      apiFetch(`/api/lineage?id=${encodeURIComponent(id)}`)
         .then(r => r.ok ? r.json() : [])
         .then(setLineage)
     }
@@ -642,7 +768,7 @@ function BlockCell({
       body.from_block_version = (block as any).from_block_version
     }
     
-    await fetch('/api/block', {
+    await apiFetch('/api/block', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -677,7 +803,7 @@ function BlockCell({
     }
     try {
       // kick off synchronous run and wait for completion
-      const resp = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
+      const resp = await apiFetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
       es.close()
       
       // Check if the run was successful
@@ -687,7 +813,7 @@ function BlockCell({
       }
       
       // final fetch of logs to ensure we have everything
-      const l = await fetch(`/api/logs?id=${encodeURIComponent(id)}`).then(r=>r.ok?r.text():'')
+      const l = await apiFetch(`/api/logs?id=${encodeURIComponent(id)}`).then(r=>r.ok?r.text():'')
       setLogs(l)
     } finally {
       setRunning(false)
@@ -989,7 +1115,7 @@ function BasePicker({ id, from, fromBlock, fromBlockVersion, onChange, blocksSug
   useEffect(() => {
     if (mode === 'block' && block) {
       setLoadingVersions(true)
-      fetch(`/api/history?id=${encodeURIComponent(block)}`)
+      apiFetch(`/api/history?id=${encodeURIComponent(block)}`)
         .then(r => r.ok ? r.json() : [])
         .then((arr: any[]) => {
           setAvailableVersions(arr.map(x => ({ digest: x.digest, timestamp: x.timestamp || '' })))
@@ -1158,7 +1284,7 @@ function DockerfileModal({
         setLoading(false)
       } else {
         // Fallback to fetching from the API using the digest
-        fetch(`/api/dockerfile-by-digest?digest=${encodeURIComponent(image.digest)}`)
+        apiFetch(`/api/dockerfile-by-digest?digest=${encodeURIComponent(image.digest)}`)
           .then(r => {
             if (r.ok) {
               return r.text()
@@ -1263,7 +1389,7 @@ function AddBlockModal({
   useEffect(() => {
     if (mode === 'block' && block) {
       setLoadingVersions(true)
-      fetch(`/api/history?id=${encodeURIComponent(block)}`)
+      apiFetch(`/api/history?id=${encodeURIComponent(block)}`)
         .then(r => r.ok ? r.json() : [])
         .then((arr: any[]) => {
           setAvailableVersions(arr.map(x => ({ digest: x.digest, timestamp: x.timestamp || '' })))

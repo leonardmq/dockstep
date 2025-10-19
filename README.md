@@ -1,6 +1,6 @@
 # Dockstep
 
-> **Jupyter Notebook but for Docker** - Build, debug, and iterate on Docker images interactively
+> **Jupyter Notebook, but for Dockerfiles** - Build, debug, and iterate on Docker images interactively
 
 Dockstep transforms Docker image building into an interactive, explorable experience. Think of it as Jupyter Notebooks, but for Dockerfiles - where each cell is a build step you can run, inspect, modify, and iterate on independently.
 
@@ -193,6 +193,27 @@ dockstep export image <id>       # Tag and push image
 --quiet            # Reduce output
 --no-color         # Disable colors
 --debug            # Enable debug output
+-h, --help         # Show help message
+```
+
+### UI Flags
+```bash
+--host <address>   # Host to bind UI server to (default: localhost)
+--port <number>    # Port to bind UI server to (default: 7689)
+--auth             # Enable token authentication (default: false)
+--open             # Open browser automatically (default: true)
+```
+
+### Examples
+```bash
+# Bind to all interfaces on port 8080
+dockstep ui --host 0.0.0.0 --port 8080
+
+# Bind to localhost on port 3000
+dockstep ui --host localhost --port 3000
+
+# Bind to all interfaces on port 8080 and enable token authentication
+dockstep ui --host 0.0.0.0 --port 8080 --auth
 ```
 
 ## Configuration
@@ -239,6 +260,16 @@ The `dockstep.yaml` file can be edited in the Dockstep UI in `Edit YAML`, or man
 - **Flexible Context**: Override build context per block or globally
 - **Rich Metadata**: Add labels, entrypoints, and commands
 - **.dockerignore Support**: Automatic file filtering
+
+## Security
+
+When running the UI server with the `--auth` flag, Dockstep will protect API routes behind a bearer token:
+
+```bash
+dockstep ui --host 0.0.0.0 --port 8888 --auth
+# Access token: AbC123XyZ789...
+# You will need to enter this token in the browser
+```
 
 ## Project Structure
 
